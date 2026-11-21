@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connection test</title>
+<style>
+  :root { --bg:#f4f2ec; --panel:#fff; --ink:#1d1d1b; --mute:#6b6a65; --line:#d9d6cc; --ok:#1c7c3c; --bad:#b3261e; --warn:#9a6700; --accent:#2a5db0; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161614; --panel:#201f1c; --ink:#ecebe6; --mute:#a09e96; --line:#3a3833; --ok:#6fcf8a; --bad:#ff8a80; --warn:#e3b341; --accent:#8ab4f8; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  main { max-width:980px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:4px 0 2px; } h2 { font-size:15px; margin:0 0 8px; }
+  p.lead { color:var(--mute); margin:0 0 14px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; margin:0 0 14px; }
+  button, input { font:inherit; color:inherit; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:7px; padding:8px 14px; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  input[type=text] { background:var(--bg); border:1px solid var(--line); border-radius:7px; padding:8px 10px; width:150px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  table { border-collapse:collapse; width:100%; font-size:14px; } td, th { text-align:left; padding:5px 8px 5px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mute); font-weight:500; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); } .mute { color:var(--mute); }
+  canvas { width:100%; height:auto; background:var(--bg); border:1px solid var(--line); border-radius:8px; touch-action:none; display:block; }
+  #log { height:150px; overflow:auto; font:12.5px/1.4 ui-monospace, Menlo, monospace; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px; white-space:pre-wrap; }
+  #share { font:13px ui-monospace, Menlo, monospace; word-break:break-all; }
+  .bar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; } .bar > i { display:block; height:100%; width:0; background:var(--accent); }
+  .hide { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Connection test</h1>
+  <p class="lead">Checks that two or more people can connect directly, hear each other, and download and store files from this site. Open it on each person's computer.</p>
+
+  <section>
+    <h2>1. This computer</h2>
+    <table id="self"></table>
+    <div class="row" style="margin-top:8px"><button class="ghost" id="recheck">Check again</button></div>
+  </section>
+
+  <section>
+    <h2>2. Download and storage</h2>
+    <div class="row"><button id="dl">Download test files</button><button class="ghost" id="dlclear">Forget stored files</button><span id="dlmsg" class="mute"></span></div>
+    <div class="bar" style="margin-top:10px"><i id="dlbar"></i></div>
+    <table id="dltab" style="margin-top:8px"></table>
+  </section>
+
+  <section>
+    <h2>3. Room</h2>
+    <div class="row" id="joinrow">
+      <input type="text" id="name" placeholder="Your name" maxlength="16">
+      <button id="create">Create a room</button>
+      <span class="mute">or</span>
+      <input type="text" id="code" placeholder="Room code" maxlength="8" style="text-transform:uppercase;width:120px">
+      <button id="join">Join</button>
+    </div>
+    <div id="inroom" class="hide">
+      <div class="row"><strong id="roomlabel"></strong><span id="status" class="mute"></span><button class="ghost" id="copy">Copy link</button><button id="mic">Turn microphone on</button><button class="ghost" id="leave">Leave</button></div>
+      <div id="share" class="mute" style="margin:6px 0 10px"></div>
+      <canvas id="arena" width="900" height="420"></canvas>
+      <p class="mute" style="margin:6px 0 10px">Move your dot with the arrow keys or WASD, or drag it. Each grid square is 10 metres. With headphones, a voice should come from the side its dot is on and fade with distance (silent beyond about 45 metres).</p>
+      <table id="peers"></table>
+      <div class="row" style="margin-top:10px"><input type="text" id="chat" placeholder="Type a message and press Enter" style="flex:1;width:auto" maxlength="200"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Log</h2>
+    <div id="log"></div>
+    <div class="row" style="margin-top:8px"><button class="ghost" id="copylog">Copy report</button><span class="mute">Send this to whoever is helping you if something fails.</span></div>
+  </section>
+</main>
+
+<script src="peerjs.min.js"></script>
+<script>
+'use strict';
+// Same ingredients as the game's peer-to-peer mode: a PeerJS broker to find each other by room code, public STUN servers,
+// one browser as the room host relaying everyone's data (a star), and direct WebRTC audio between each pair for voice.
+const ICE = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }, { urls: 'stun:stun2.l.google.com:19302' }, { urls: 'stun:stun.cloudflare.com:3478' }];
+const PREFIX = 'gtotest-';                       // not the game's prefix, so test rooms never collide with real ones
+const W = 90, H = 42, HEAR = 45, FULL = 6;       // arena in metres; voices silent beyond HEAR, full volume within FULL
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const t0 = performance.now();
+function log(...a) { const s = `[${((performance.now() - t0) / 1000).toFixed(1).padStart(6)}] ` + a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' '); const el = $('log'); el.textContent += s + '\n'; el.scrollTop = el.scrollHeight; }
+const row = (k, v, cls = '') => `<tr><th>${esc(k)}</th><td class="${cls}">${v}</td></tr>`;
+
+function peerOptions() {                          // ?broker=host[:port][/path], as in the game
+  const o = { config: { iceServers: ICE }, debug: 0 };
+  const b = new URLSearchParams(location.search).get('broker');
+  const m = b && /^(?:(https?):\/\/)?([^/:]+)(?::(\d+))?(\/.*)?$/.exec(b);
+  if (m) { o.host = m[2]; o.port = +(m[3] || (m[1] === 'https' ? 443 : 80)); o.path = m[4] || '/'; o.secure = m[1] ? m[1] === 'https' : o.port === 443; }
+  return o;
+}
+
+// ---------------------------------------------------------------- 1. this computer
+async function selfCheck() {
+  const out = [];
+  out.push(row('Browser', esc(navigator.userAgent.replace(/^Mozilla\/5\.0 /, ''))));
+  out.push(row('Secure page (needed for the microphone)', window.isSecureContext ? 'yes' : 'no', window.isSecureContext ? 'ok' : 'bad'));
+  out.push(row('WebRTC', window.RTCPeerConnection ? 'available' : 'missing', window.RTCPeerConnection ? 'ok' : 'bad'));
+  out.push(row('Storage for downloaded files', 'caches' in window ? 'available' : 'missing (private window?)', 'caches' in window ? 'ok' : 'warn'));
+  $('self').innerHTML = out.join('') + row('Finding your public address', 'checking…', 'mute') + row('Room broker', 'checking…', 'mute');
+  // STUN: can this network tell us our public address? (a "srflx" candidate). Without it, direct connections usually fail.
+  let kinds = new Set(), addr = '';
+  try {
+    const pc = new RTCPeerConnection({ iceServers: ICE }); pc.createDataChannel('x');
+    pc.onicecandidate = (e) => { if (e.candidate) { const c = e.candidate; const ty = c.type || (/ typ (\w+)/.exec(c.candidate) || [])[1]; kinds.add(ty); if (ty === 'srflx') addr = c.address || (c.candidate.split(' ')[4] || ''); } };
+    await pc.setLocalDescription(await pc.createOffer());
+    await new Promise((r) => { const t = setTimeout(r, 5000); pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') { clearTimeout(t); r(); } }; });
+    pc.close();
+  } catch (e) { log('STUN check failed:', String(e)); }
+  const srflx = kinds.has('srflx');
+  out.push(row('Finding your public address', srflx ? 'works' + (addr ? ' (' + esc(addr.replace(/\.\d+$/, '.x')) + ')' : '') : 'did not work: this network may block direct connections', srflx ? 'ok' : 'bad'));
+  log('STUN candidates:', [...kinds].join(',') || 'none');
+  // Broker: can we register with it?
+  const br = await new Promise((res) => {
+    let done = false; const fin = (v) => { if (!done) { done = true; res(v); } };
+    let p; try { p = new Peer(undefined, peerOptions()); } catch (e) { return fin('error: ' + e); }
+    const t = setTimeout(() => { try { p.destroy(); } catch {} fin('no answer after 10 s'); }, 10000);
+    p.on('open', () => { clearTimeout(t); try { p.destroy(); } catch {} fin('ok'); });
+    p.on('error', (e) => { clearTimeout(t); try { p.destroy(); } catch {} fin('error: ' + (e.type || e)); });
+  });
+  out.push(row('Room broker', br === 'ok' ? 'reachable' : esc(br), br === 'ok' ? 'ok' : 'bad'));
+  log('broker:', br);
+  $('self').innerHTML = out.join('');
+}
+$('recheck').onclick = selfCheck;
+
+// ---------------------------------------------------------------- 2. download and storage (as the game's loading screen does)
+const CACHE = 'nettest-files-v1';
+async function downloadTest() {
+  $('dl').disabled = true; $('dltab').innerHTML = ''; $('dlmsg').textContent = '';
+  try {
+    const man = await (await fetch('payload/manifest.json', { cache: 'no-store' })).json();
+    const total = man.files.reduce((s, f) => s + f.bytes, 0);
+    const cache = 'caches' in window ? await caches.open(CACHE).catch(() => null) : null;
+    let done = 0, fromNet = 0, fromStore = 0; const tStart = performance.now(); const rows = [];
+    for (const f of man.files) {
+      const url = 'payload/' + f.name + '?v=' + man.version;
+      let res = cache && await cache.match(url), src = 'stored copy', t1 = performance.now(), buf;
+      if (res) { buf = await res.arrayBuffer(); fromStore += buf.byteLength; done += buf.byteLength; }
+      else {
+        src = 'downloaded'; res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) throw new Error(f.name + ': HTTP ' + res.status);
+        const rd = res.body.getReader(); const chunks = []; let n = 0;
+        for (;;) { const { done: d, value } = await rd.read(); if (d) break; chunks.push(value); n += value.length; done += value.length; $('dlbar').style.width = (100 * done / total).toFixed(1) + '%'; $('dlmsg').textContent = `${(done / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB`; }
+        buf = new Uint8Array(n); let o = 0; for (const c of chunks) { buf.set(c, o); o += c.length; } buf = buf.buffer; fromNet += n;
+        if (cache) await cache.put(url, new Response(buf, { headers: { 'content-type': 'application/octet-stream' } })).catch((e) => log('could not store', f.name, String(e)));
+      }
+      const ms = performance.now() - t1;
+      const sum = [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+      const good = sum === f.sha16 && buf.byteLength === f.bytes;
+      rows.push(`<tr><td>${esc(f.name)}</td><td>${(f.bytes / 1e6).toFixed(1)} MB</td><td>${src}</td><td>${src === 'downloaded' ? (f.bytes * 8 / 1e6 / (ms / 1000)).toFixed(1) + ' Mbit/s' : ms.toFixed(0) + ' ms'}</td><td class="${good ? 'ok' : 'bad'}">${good ? 'intact' : 'CORRUPT'}</td></tr>`);
+      $('dltab').innerHTML = '<tr><th>File</th><th>Size</th><th>From</th><th>Speed</th><th>Check</th></tr>' + rows.join('');
+      $('dlbar').style.width = (100 * done / total).toFixed(1) + '%';
+      log('file', f.name, src, good ? 'intact' : 'CORRUPT', ms.toFixed(0) + ' ms');
+    }
+    const secs = (performance.now() - tStart) / 1000;
+    $('dlmsg').textContent = fromNet ? `Downloaded ${(fromNet / 1e6).toFixed(1)} MB in ${secs.toFixed(1)} s (${(fromNet * 8 / 1e6 / secs).toFixed(1)} Mbit/s)${cache ? '. Press the button again: it should now come from the stored copy.' : '. Could not store it on this device.'}` : `All ${(fromStore / 1e6).toFixed(1)} MB came from the stored copy in ${secs.toFixed(2)} s: nothing downloaded.`;
+    log('download test:', $('dlmsg').textContent);
+  } catch (e) { $('dlmsg').innerHTML = '<span class="bad">Failed: ' + esc(e.message || e) + '</span>'; log('download failed:', String(e)); }
+  $('dl').disabled = false;
+}
+$('dl').onclick = downloadTest;
+$('dlclear').onclick = async () => { if ('caches' in window) await caches.delete(CACHE); $('dlmsg').textContent = 'Stored files forgotten.'; $('dlbar').style.width = '0'; $('dltab').innerHTML = ''; };
+
+// ---------------------------------------------------------------- 3. room
+const COLORS = ['#d1495b', '#2a9d8f', '#e9a23b', '#4c6ef5', '#9b5de5', '#3a86ff', '#588157', '#f15bb5'];
+let peer = null, isHost = false, hostConn = null, code = '', myId = '', conns = new Map();   // conns: host only, pid -> DataConnection
+const roster = new Map();                         // pid -> { name, color, x, y, mic, seen }
+const calls = new Map();                          // pid -> { call, pc, src, gain, pan, an, el, level, stats }
+let ac = null, silent = null, micStream = null, micOn = false, pings = new Map(), rtt = new Map(), lastSent = '', seq = 0;
+
+function audio() {
+  if (!ac) {
+    ac = new (window.AudioContext || window.webkitAudioContext)();
+    const d = ac.createMediaStreamDestination(); const o = ac.createConstantSource(); o.offset.value = 0; o.connect(d); o.start();
+    silent = d.stream;                             // a silent track, so every pair can connect before anyone turns a mic on
+  }
+  if (ac.state === 'suspended') ac.resume();
+  return ac;
+}
+const me = () => roster.get(myId);
+const status = (s, cls = 'mute') => { $('status').textContent = s; $('status').className = cls; };
+
+function start(asHost) {
+  const name = ($('name').value.trim() || 'Player').slice(0, 16);
+  code = asHost ? Array.from({ length: 5 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 31)]).join('') : $('code').value.trim().toUpperCase();
+  if (!code) { $('code').focus(); return; }
+  audio(); isHost = asHost;
+  $('joinrow').classList.add('hide'); $('inroom').classList.remove('hide');
+  $('roomlabel').textContent = 'Room ' + code; status(asHost ? 'creating…' : 'connecting…');
+  const link = location.origin + location.pathname + '?room=' + code + (new URLSearchParams(location.search).get('broker') ? '&broker=' + encodeURIComponent(new URLSearchParams(location.search).get('broker')) : '');
+  $('share').textContent = link; $('copy').onclick = () => navigator.clipboard.writeText(link);
+  peer = new Peer(asHost ? PREFIX + code : undefined, peerOptions());
+  peer.on('open', (id) => {
+    myId = id; log('registered with broker as', asHost ? 'host' : 'guest');
+    roster.set(myId, { name, color: COLORS[Math.floor(Math.random() * COLORS.length)], x: 10 + Math.random() * (W - 20), y: 8 + Math.random() * (H - 16), mic: false });
+    if (asHost) { status('waiting for others: send them the link', 'ok'); render(); }
+    else {
+      hostConn = peer.connect(PREFIX + code, { reliable: true });
+      const t = setTimeout(() => status('could not reach the host: wrong code, or a network is blocking direct connections', 'bad'), 15000);
+      hostConn.on('open', () => { clearTimeout(t); status('connected', 'ok'); log('data channel to host open'); hostConn.send({ t: 'hello', pid: myId, p: me() }); });
+      hostConn.on('data', onData);
+      hostConn.on('close', () => { status('the host left: room closed', 'bad'); log('host connection closed'); });
+    }
+  });
+  peer.on('connection', (c) => {                  // host: a guest's data channel
+    c.on('open', () => log('guest data channel open'));
+    c.on('data', (m) => { if (m && m.t === 'hello') { conns.set(m.pid, c); c.pid = m.pid; } onData(m, c); });
+    c.on('close', () => { if (c.pid) { conns.delete(c.pid); drop(c.pid); broadcast({ t: 'bye', pid: c.pid }); } });
+  });
+  peer.on('call', (call) => { call.answer(micOn && micStream ? micStream : silent); wire(call.peer, call); });
+  peer.on('error', (e) => { log('peer error:', e.type || String(e)); if (e.type === 'unavailable-id') status('that room code is already in use: try again', 'bad'); else if (e.type === 'peer-unavailable') status('no room with that code', 'bad'); else if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error') status('cannot reach the room broker', 'bad'); });
+  peer.on('disconnected', () => { log('lost the broker; reconnecting'); try { peer.reconnect(); } catch {} });
+}
+function send(m) { if (isHost) { onData(m, null); } else if (hostConn && hostConn.open) hostConn.send(m); }
+function broadcast(m, except) { for (const [pid, c] of conns) if (c !== except && c.open) c.send(m); }
+function onData(m, from) {
+  if (!m || typeof m !== 'object') return;
+  if (isHost) {                                    // the host relays, exactly as the game's in-page relay does
+    if (m.t === 'hello') { roster.set(m.pid, m.p); from.send({ t: 'roster', list: [...roster] }); broadcast({ t: 'join', pid: m.pid, p: m.p }, from); log(m.p.name, 'joined'); connectVoice(); render(); return; }
+    if (m.t === 'ping') { if (from) from.send({ t: 'pong', n: m.n }); return; }
+    if (from || m.pid === myId) broadcast(m, from);
+  }
+  if (m.t === 'roster') { for (const [pid, p] of m.list) if (pid !== myId) roster.set(pid, p); connectVoice(); }
+  else if (m.t === 'join') { roster.set(m.pid, m.p); log(m.p.name, 'joined'); connectVoice(); }
+  else if (m.t === 'bye') drop(m.pid);
+  else if (m.t === 'pos' && m.pid !== myId) { const p = roster.get(m.pid); if (p) { p.x = m.x; p.y = m.y; p.mic = m.mic; } }
+  else if (m.t === 'chat') log('<' + ((roster.get(m.pid) || {}).name || '?') + '>', m.text);
+  else if (m.t === 'pong') { const t = pings.get(m.n); if (t) { rtt.set('host', performance.now() - t); pings.delete(m.n); } }
+  render();
+}
+function drop(pid) { const p = roster.get(pid); if (p) log(p.name, 'left'); roster.delete(pid); const c = calls.get(pid); if (c) { try { c.call.close(); } catch {} try { c.el.remove(); } catch {} calls.delete(pid); } render(); }
+
+// voice: one direct call per pair; the peer with the smaller id calls
+function connectVoice() { for (const pid of roster.keys()) if (pid !== myId && !calls.has(pid) && myId < pid) wire(pid, peer.call(pid, micOn && micStream ? micStream : silent)); }
+function wire(pid, call) {
+  const c = { call, pc: null, level: 0, stats: {} }; calls.set(pid, c);
+  call.on('stream', (stream) => {
+    if (c.src) return;
+    const a = audio();
+    c.el = document.createElement('audio'); c.el.muted = true; c.el.srcObject = stream; c.el.play().catch(() => {});   // Chrome only feeds Web Audio if the stream is also on an element
+    c.src = a.createMediaStreamSource(stream); c.gain = a.createGain(); c.an = a.createAnalyser(); c.an.fftSize = 512;
+    c.pan = a.createPanner(); c.pan.panningModel = 'HRTF'; c.pan.distanceModel = 'linear'; c.pan.refDistance = 1; c.pan.maxDistance = 1e4; c.pan.rolloffFactor = 0;
+    c.src.connect(c.an); c.src.connect(c.gain); c.gain.connect(c.pan); c.pan.connect(a.destination);
+    log('voice link with', (roster.get(pid) || {}).name || pid.slice(0, 6), 'is up');
+  });
+  call.on('close', () => { if (calls.get(pid) === c) calls.delete(pid); });
+  call.on('error', (e) => log('voice link error:', String(e.type || e)));
+  c.pc = call.peerConnection;
+}
+async function toggleMic() {
+  audio();
+  if (!micOn) {
+    try { micStream = micStream || await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
+    catch (e) { log('microphone refused or missing:', e.name || String(e)); status('microphone not available: ' + (e.name || e), 'bad'); return; }
+  }
+  micOn = !micOn; const tr = micOn ? micStream.getAudioTracks()[0] : silent.getAudioTracks()[0];
+  for (const c of calls.values()) for (const s of (c.call.peerConnection ? c.call.peerConnection.getSenders() : [])) if (s.track && s.track.kind === 'audio' || !s.track) s.replaceTrack(tr).catch(() => {});
+  me().mic = micOn; $('mic').textContent = micOn ? 'Turn microphone off (it is LIVE)' : 'Turn microphone on'; log('microphone', micOn ? 'on' : 'off'); sendPos(true);
+}
+
+// movement
+const keys = new Set(); let drag = false;
+addEventListener('keydown', (e) => { if (e.target.tagName === 'INPUT') return; if (/^(Arrow|Key[WASD])/.test(e.code)) { keys.add(e.code); e.preventDefault(); } });
+addEventListener('keyup', (e) => keys.delete(e.code));
+const cv = $('arena'), g = cv.getContext('2d');
+const toM = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) / r.width * W, (e.clientY - r.top) / r.height * H]; };
+cv.addEventListener('pointerdown', (e) => { const p = me(); if (!p) return; const [x, y] = toM(e); if (Math.hypot(x - p.x, y - p.y) < 4) { drag = true; cv.setPointerCapture(e.pointerId); } });
+cv.addEventListener('pointermove', (e) => { if (drag) { const p = me(); [p.x, p.y] = toM(e); } });
+cv.addEventListener('pointerup', () => { drag = false; });
+function sendPos(force) { const p = me(); if (!p) return; const s = p.x.toFixed(1) + ',' + p.y.toFixed(1) + ',' + micOn; if (s === lastSent && !force) return; lastSent = s; send({ t: 'pos', pid: myId, x: +p.x.toFixed(2), y: +p.y.toFixed(2), mic: micOn }); }
+let last = performance.now(), sendT = 0, statT = 0, pingT = 0;
+// the update runs on a timer as well as on animation frames, so it keeps going (slowly) while the tab is in the background
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now; const p = me(); if (!p) return;
+  const v = 9 * dt; if (keys.has('ArrowLeft') || keys.has('KeyA')) p.x -= v; if (keys.has('ArrowRight') || keys.has('KeyD')) p.x += v; if (keys.has('ArrowUp') || keys.has('KeyW')) p.y -= v; if (keys.has('ArrowDown') || keys.has('KeyS')) p.y += v;
+  p.x = Math.max(1, Math.min(W - 1, p.x)); p.y = Math.max(1, Math.min(H - 1, p.y));
+  if ((sendT += dt) > 0.08) { sendT = 0; sendPos(false); }
+  if ((pingT += dt) > 2) { pingT = 0; sendPos(true); if (!isHost && hostConn && hostConn.open) { const n = ++seq; pings.set(n, performance.now()); hostConn.send({ t: 'ping', n }); } }
+  // spatial voices: listener at my dot facing up the screen
+  const buf = new Uint8Array(256);
+  for (const [pid, c] of calls) {
+    const q = roster.get(pid); if (!q || !c.pan) continue;
+    const dx = q.x - p.x, dy = q.y - p.y, d = Math.hypot(dx, dy);
+    const vol = d <= FULL ? 1 : d >= HEAR ? 0 : Math.pow(1 - (d - FULL) / (HEAR - FULL), 1.6);
+    c.gain.gain.setTargetAtTime(vol, ac.currentTime, 0.05);
+    const k = d > 0.01 ? 1 / d : 0; c.pan.positionX.setTargetAtTime(dx * k * 1.5, ac.currentTime, 0.05); c.pan.positionZ.setTargetAtTime(dy * k * 1.5, ac.currentTime, 0.05); c.pan.positionY.value = 0;
+    c.an.getByteTimeDomainData(buf); let s = 0; for (const b of buf) s += (b - 128) * (b - 128); c.level += (Math.sqrt(s / buf.length) / 128 - c.level) * 0.3; c.vol = vol; c.d = d;
+  }
+  if ((statT += dt) > 1) { statT = 0; pollStats(); }
+}
+async function pollStats() {
+  for (const [pid, c] of calls) {
+    const pc = c.call.peerConnection; if (!pc) continue;
+    try {
+      const st = await pc.getStats(); const by = new Map(); st.forEach((r) => by.set(r.id, r)); const o = { state: pc.connectionState };
+      st.forEach((r) => {
+        if (r.type === 'candidate-pair' && (r.selected || r.nominated) && r.state === 'succeeded') { o.rtt = r.currentRoundTripTime; const l = by.get(r.localCandidateId), m = by.get(r.remoteCandidateId); o.path = (l && l.candidateType) + ' / ' + (m && m.candidateType); o.proto = l && l.protocol; }
+        if (r.type === 'inbound-rtp' && r.kind === 'audio') { o.lost = r.packetsLost; o.recv = r.packetsReceived; o.jitter = r.jitter; }
+      });
+      c.stats = o;
+    } catch {}
+  }
+  render();
+}
+function render() {
+  const p = me(); if (!p) return;
+  const rows = ['<tr><th>Who</th><th>Data</th><th>Voice link</th><th>Route</th><th>Delay</th><th>Lost</th><th>Distance</th><th>Hearing them</th></tr>'];
+  for (const [pid, q] of roster) {
+    if (pid === myId) { rows.push(`<tr><td><span style="color:${q.color}">●</span> ${esc(q.name)} (you${isHost ? ', host' : ''})</td><td colspan="7" class="mute">${micOn ? 'microphone live' : 'microphone off'}${!isHost && rtt.has('host') ? ' · delay to host ' + rtt.get('host').toFixed(0) + ' ms' : ''}</td></tr>`); continue; }
+    const c = calls.get(pid), s = (c && c.stats) || {}; const up = s.state === 'connected';
+    rows.push(`<tr><td><span style="color:${q.color}">●</span> ${esc(q.name)}${pid.startsWith(PREFIX) ? ' (host)' : ''}</td><td class="ok">via host</td>`
+      + `<td class="${up ? 'ok' : s.state === 'failed' ? 'bad' : 'warn'}">${up ? 'direct' : s.state || 'connecting…'}</td><td>${s.path ? esc(s.path) + ' ' + esc(s.proto || '') : ''}</td>`
+      + `<td>${s.rtt != null ? (s.rtt * 1000).toFixed(0) + ' ms' : ''}</td><td>${s.recv ? (100 * (s.lost || 0) / (s.recv + (s.lost || 0))).toFixed(1) + '%' : ''}</td>`
+      + `<td>${c && c.d != null ? c.d.toFixed(0) + ' m' : ''}</td><td>${!q.mic ? '<span class="mute">their mic is off</span>' : c && c.vol === 0 ? '<span class="mute">out of range</span>' : c && c.level > 0.01 ? '<span class="ok">sound arriving</span>' : 'mic on, silent'}</td></tr>`);
+  }
+  $('peers').innerHTML = rows.join('');
+}
+function draw() {
+  const p = me(), s = cv.width / W, css = getComputedStyle(document.documentElement);
+  g.clearRect(0, 0, cv.width, cv.height); g.strokeStyle = css.getPropertyValue('--line'); g.lineWidth = 1;
+  for (let x = 0; x <= W; x += 10) { g.beginPath(); g.moveTo(x * s, 0); g.lineTo(x * s, cv.height); g.stroke(); }
+  for (let y = 0; y <= H; y += 10) { g.beginPath(); g.moveTo(0, y * s); g.lineTo(cv.width, y * s); g.stroke(); }
+  g.setLineDash([6, 6]); g.beginPath(); g.arc(p.x * s, p.y * s, HEAR * s, 0, 7); g.stroke(); g.setLineDash([]);
+  for (const [pid, q] of roster) {
+    const c = calls.get(pid), lv = pid === myId ? 0 : c ? Math.min(1, c.level * 8) * (c.vol > 0 ? 1 : 0) : 0;
+    if (lv > 0.02) { g.fillStyle = q.color + '33'; g.beginPath(); g.arc(q.x * s, q.y * s, (1.6 + lv * 5) * s, 0, 7); g.fill(); }
+    g.fillStyle = q.color; g.beginPath(); g.arc(q.x * s, q.y * s, 1.1 * s, 0, 7); g.fill();
+    if (pid === myId) { g.strokeStyle = css.getPropertyValue('--ink'); g.lineWidth = 2; g.stroke(); }
+    g.fillStyle = css.getPropertyValue('--ink'); g.font = '13px system-ui'; g.textAlign = 'center'; g.fillText(q.name + (q.mic ? ' 🎤' : ''), q.x * s, q.y * s - 1.8 * s);
+  }
+}
+$('create').onclick = () => start(true); $('join').onclick = () => start(false);
+$('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') start(false); });
+$('mic').onclick = toggleMic; $('leave').onclick = () => location.assign(location.pathname + (new URLSearchParams(location.search).get('broker') ? '?broker=' + encodeURIComponent(new URLSearchParams(location.search).get('broker')) : ''));
+$('chat').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.value.trim()) { send({ t: 'chat', pid: myId, text: e.target.value.trim() }); if (!isHost) log('<' + me().name + '>', e.target.value.trim()); e.target.value = ''; } });
+$('copylog').onclick = () => navigator.clipboard.writeText($('self').innerText + '\n\n' + $('dlmsg').innerText + '\n' + $('dltab').innerText + '\n\n' + $('peers').innerText + '\n\n' + $('log').textContent);
+{ const r = new URLSearchParams(location.search).get('room'); if (r) $('code').value = r.toUpperCase(); try { $('name').value = localStorage.getItem('nettest-name') || ''; $('name').onchange = () => localStorage.setItem('nettest-name', $('name').value); } catch {} }
+if (typeof Peer === 'undefined') { $('self').innerHTML = row('Page files', 'peerjs.min.js did not load', 'bad'); log('peerjs.min.js missing'); } else selfCheck();
+setInterval(() => frame(performance.now()), 50);
+(function paint() { requestAnimationFrame(paint); if (me()) draw(); })();
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+{
+ "version": 1,
+ "files": [
+  {
+   "name": "pack1.bin",
+   "bytes": 4194304,
+   "sha16": "faaf83e6da927d26"
+  },
+  {
+   "name": "pack2.bin",
+   "bytes": 4194304,
+   "sha16": "6326383a357c38ad"
+  },
+  {
+   "name": "pack3.bin",
+   "bytes": 4194304,
+   "sha16": "fbc854b05117aed1"
+  }
+ ]
+}
